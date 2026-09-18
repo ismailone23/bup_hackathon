@@ -9,7 +9,7 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-Set `OPENAI_API_KEY` and, if needed, override `OPENAI_MODEL` (default: `gpt-5.6-luna`) and `OPENAI_TIMEOUT_SECONDS` (default: `12`). Then run:
+Set `OPENAI_API_KEY` and, if needed, override `OPENAI_MODEL` (default: `gpt-4.1-mini`) and `OPENAI_TIMEOUT_SECONDS` (default: `12`). Then run:
 
 ```bash
 uvicorn main:app --host 0.0.0.0 --port 8000

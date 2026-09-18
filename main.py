@@ -207,7 +207,7 @@ async def interpret_notes(payload: OptimizeRequest) -> list[DirectiveInterpretat
 
 async def request_interpretation(prompt: dict, seed: int, system_prompt: str) -> list[DirectiveInterpretation]:
     completion = await _client().chat.completions.create(
-            model=os.getenv("OPENAI_MODEL", "gpt-5.6-luna"),
+            model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": json.dumps(prompt)},
