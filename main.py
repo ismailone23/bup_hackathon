@@ -243,11 +243,13 @@ async def request_interpretation(prompt: dict, seed: int, system_prompt: str) ->
             adjustment = directive.structured_adjustment
             if adjustment and len(adjustment.hours) > 1:
                 hours = adjustment.hours
-                if all((hours[index] + 1) % 24 == hours[index + 1] for index in range(len(hours) - 1)):
-                    directive.structured_adjustment = adjustment.model_copy(update={"hours": sorted(hours)})
+                cyclic = all((hours[index] + 1) % 24 == hours[index + 1] for index in range(len(hours) - 1))
+                if cyclic:
+                    hours = sorted(hours)
+                    directive.structured_adjustment = adjustment.model_copy(update={"hours": hours})
                 note = prompt["operator_notes"][directive.note_index]
                 match = re.search(r"(\d{1,2})\s*(am|pm).*?(?:until|to)\s*(\d{1,2})\s*(am|pm)", note, re.IGNORECASE)
-                if match:
+                if match and (cyclic or hours == sorted(hours)):
                     start = int(match.group(1)) % 12 + (12 if match.group(2).lower() == "pm" else 0)
                     end = int(match.group(3)) % 12 + (12 if match.group(4).lower() == "pm" else 0)
                     if end <= start:
