@@ -156,19 +156,30 @@ INTERPRETATION_SCHEMA = {
 SYSTEM_PROMPT = """You interpret campus operator notes for a 24-hour energy optimizer.
 Return exactly one entry per note in note_index order. Supported directives are solar_reduction,
 minimum_battery_reserve, no_charge_window, no_discharge_window, max_grid_window, and no_op.
-Windows are start-inclusive and end-exclusive. Emit sorted unique hours 0 through 23.
+Windows are start-inclusive and end-exclusive: '2 AM until 5 AM' means [2,3,4],
+'6 PM until 9 PM' means [18,19,20], and '11 AM until 1 PM' means [11,12].
+The ending clock time is a boundary, never an included hour. Emit sorted unique hours 0 through 23.
 A reduction BY 80% leaves factor 0.2; reduction TO 80% means factor 0.8.
 Convert percentage/fraction reserves to kWh using the supplied battery capacity.
 For no_op use applies=false and a null adjustment; otherwise use applies=true.
 For an adjustment, always include hours and all three nullable value fields. Populate only the field
 for that directive: factor, minimum_energy_kwh, or max_grid_kwh. Window directives use all null values.
-Do not infer unsupported changes to demand, tariff, or battery parameters."""
+Do not infer unsupported changes to demand, tariff, or battery parameters.
+Before returning, independently check each note's directive type, boundary hours, percentage
+normalization, note index, and whether the note is an unrelated distractor."""
+
+
+OPENAI_CLIENT: AsyncOpenAI | None = None
 
 
 def _client() -> AsyncOpenAI:
+    global OPENAI_CLIENT
+    if OPENAI_CLIENT is not None:
+        return OPENAI_CLIENT
     if not os.getenv("OPENAI_API_KEY"):
         raise ServiceError(500, "INTERPRETATION_FAILED", "Language model is not configured.")
-    return AsyncOpenAI(timeout=float(os.getenv("OPENAI_TIMEOUT_SECONDS", "12")), max_retries=1)
+    OPENAI_CLIENT = AsyncOpenAI(timeout=float(os.getenv("OPENAI_TIMEOUT_SECONDS", "12")), max_retries=1)
+    return OPENAI_CLIENT
 
 
 async def interpret_notes(payload: OptimizeRequest) -> list[DirectiveInterpretation]:
@@ -188,6 +199,7 @@ async def interpret_notes(payload: OptimizeRequest) -> list[DirectiveInterpretat
                 "json_schema": {"name": "directive_interpretations", "strict": True, "schema": INTERPRETATION_SCHEMA},
             },
             temperature=0,
+            seed=7,
         )
         content = completion.choices[0].message.content
         if not content:
