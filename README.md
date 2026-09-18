@@ -6,13 +6,6 @@ challenge. It interprets 1-3 synthetic campus operator notes with OpenAI
 24-hour energy schedule with SciPy linear programming, and independently
 replays the serialized schedule before returning it.
 
-The authoritative behavior is defined by these files in
-`BUP_CSE_FEST_2026_Participant_Docs/`:
-
-- `BUP_CSE_FEST_2026_Preliminary_Problem_Statement_GridWise_LLM.pdf`
-- `BUP_CSE_FEST_2026_Participant_Guide_&_Evaluation_Rubric_GridWise_LLM.pdf`
-- `BUP_CSE_FEST_2026_Preli_Public_Sample_Cases.json`
-
 ## Endpoints
 
 | Method | Path | Purpose |
@@ -178,14 +171,16 @@ set, and reference schedules do not need to match byte-for-byte. Compare
 directive semantics, replay validity, and recalculated cost within the
 challenge tolerance of `0.01` kWh/BDT.
 
-With the service running and `OPENAI_API_KEY` configured, run all public inputs:
+With the service running and `OPENAI_API_KEY` configured, place the public
+sample JSON beside the repository README as `public_sample_cases.json`, then
+run all public inputs:
 
 ```bash
 python - <<'PY'
 import json
 import urllib.request
 
-path = "BUP_CSE_FEST_2026_Participant_Docs/BUP_CSE_FEST_2026_Preli_Public_Sample_Cases.json"
+path = "public_sample_cases.json"
 with open(path, encoding="utf-8") as file:
     pack = json.load(file)
 
