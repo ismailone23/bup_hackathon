@@ -253,9 +253,18 @@ Verify the container:
 curl http://127.0.0.1:8000/health
 ```
 
-For submission, provide the organizers a pullable registry image with an
-exact immutable tag or digest. The repository does not claim a registry image
-that has not been published.
+For submission, publish the image to a registry (GHCR or Docker Hub) with an
+exact immutable tag, then hand organizers the pullable reference:
+
+```bash
+docker build -t gridwise:local .
+docker tag gridwise:local ghcr.io/<owner>/gridwise:2026-prelim
+docker push ghcr.io/<owner>/gridwise:2026-prelim
+
+# what organizers run
+docker run --rm -p 8000:8000 -e OPENAI_API_KEY=<key> \
+  ghcr.io/<owner>/gridwise:2026-prelim
+```
 
 ## Railway Deployment
 
@@ -266,6 +275,7 @@ these Railway service variables:
 OPENAI_API_KEY=<Railway secret>
 OPENAI_MODEL=gpt-4.1-mini
 OPENAI_TIMEOUT_SECONDS=4.5
+REQUEST_DEADLINE_SECONDS=18
 ```
 
 Do not commit or print the key. Railway should use the container command from
