@@ -254,17 +254,17 @@ curl http://127.0.0.1:8000/health
 For submission, the fallback image is published to GHCR:
 
 ```bash
-docker pull ghcr.io/ismailone23/gridwise:latest
+docker pull ghcr.io/mantakamahir/gridwise:latest
 docker run --rm -p 8000:8000 -e OPENAI_API_KEY=<key> \
-  ghcr.io/ismailone23/gridwise:latest
+  ghcr.io/mantakamahir/gridwise:latest
 ```
 
 Rebuild and republish from source:
 
 ```bash
 docker build -t gridwise:local .
-docker tag gridwise:local ghcr.io/ismailone23/gridwise:latest
-docker push ghcr.io/ismailone23/gridwise:latest
+docker tag gridwise:local ghcr.io/mantakamahir/gridwise:latest
+docker push ghcr.io/mantakamahir/gridwise:latest
 ```
 
 ## Railway Deployment
