@@ -12,6 +12,8 @@ import sys
 import urllib.error
 import urllib.request
 
+import main
+
 DEFAULT_CASES = "BUP_CSE_FEST_2026_Participant_Docs/BUP_CSE_FEST_2026_Preli_Public_Sample_Cases.json"
 VALUE_FIELD = {
     "solar_reduction": "factor",
@@ -48,7 +50,18 @@ def semantics(interpretation):
     return out
 
 
-def main():
+def replay_plan(case_input, result):
+    """Independently replay the returned schedule and recompute its totals."""
+    payload = main.OptimizeRequest.model_validate(case_input)
+    directives = [main.DirectiveInterpretation.model_validate(item) for item in result["directive_interpretation"]]
+    plan = [main.HourPlan.model_validate(row) for row in result["hourly_plan"]]
+    main.replay(payload, directives, plan)
+    grid = sum(row.grid_kwh for row in plan)
+    cost = sum(row.grid_kwh * case_input["hours"][row.hour]["tariff_bdt_per_kwh"] for row in plan)
+    return grid, cost
+
+
+def main_entry():
     cases_path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_CASES
     base_url = sys.argv[2] if len(sys.argv) > 2 else "http://127.0.0.1:8000"
 
@@ -64,19 +77,27 @@ def main():
             print(f"{case['id']:<10} FAIL status={status} {result}")
             continue
         semantics_ok = semantics(result["directive_interpretation"]) == semantics(expected["directive_interpretation"])
-        plan_ok = len(result["hourly_plan"]) == 24
-        cost = float(result["total_cost_bdt"])
+        try:
+            grid, cost = replay_plan(case["input"], result)
+            plan_ok = (
+                abs(grid - float(result["total_grid_kwh"])) <= 1e-6
+                and abs(cost - float(result["total_cost_bdt"])) <= 1e-6
+            )
+        except Exception:
+            cost = None
+            plan_ok = False
         reference = float(expected["total_cost_bdt"])
-        cost_ok = abs(cost - reference) <= 0.01
+        cost_ok = cost is not None and abs(cost - reference) <= 0.01
         ok = semantics_ok and plan_ok and cost_ok
         failures += 0 if ok else 1
         mark = "PASS" if ok else "FAIL"
-        detail = [] if ok else [w for w, s in (("semantics", semantics_ok), ("plan", plan_ok), ("cost", cost_ok)) if not s]
-        print(f"{case['id']:<10} {mark} cost={cost:>10.2f} ref={reference:>10.2f} delta={cost - reference:>8.2f} {' '.join(detail)}")
+        detail = [w for w, s in (("semantics", semantics_ok), ("plan", plan_ok), ("cost", cost_ok)) if not s]
+        shown = "  n/a" if cost is None else f"{cost:>10.2f}"
+        print(f"{case['id']:<10} {mark} cost={shown} ref={reference:>10.2f} {' '.join(detail)}")
 
     print(f"\ncases={len(cases)} failures={failures}")
     return 1 if failures else 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main_entry())

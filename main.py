@@ -356,10 +356,11 @@ def solve(payload: OptimizeRequest, directives: list[DirectiveInterpretation]) -
     demand = np.array([hour.demand_kwh for hour in payload.hours])
     tariff = np.array([hour.tariff_bdt_per_kwh for hour in payload.hours])
     # Variable blocks: grid, solar, charge, discharge, end-of-hour energy.
+    # The objective is exactly the stated grid cost; charge/discharge carry no weight
+    # so the LP optimum is the true minimum cost. Only the net battery flow is emitted.
     n = 120
     objective = np.zeros(n)
     objective[:24] = tariff
-    objective[48:96] = 1e-5
     equalities, targets = [], []
     for hour in range(24):
         balance = np.zeros(n)
@@ -396,10 +397,13 @@ def solve(payload: OptimizeRequest, directives: list[DirectiveInterpretation]) -
 
     lp = dict(A_eq=np.array(equalities), b_eq=np.array(targets), bounds=bounds)
     result = linprog(objective, method="highs", **lp)
-    if result.x is None:
-        # HiGHS dual simplex can report an unrecognized status on degenerate LPs
-        # that the interior-point solver handles; the replay below gates correctness.
-        result = linprog(objective, method="highs-ipm", **lp)
+    if not result.success or result.x is None:
+        # HiGHS dual simplex can report an unrecognized status on degenerate LPs that the
+        # interior-point solver handles; keep whichever feasible vector minimizes the
+        # objective. The replay below gates validity.
+        fallback = linprog(objective, method="highs-ipm", **lp)
+        if fallback.x is not None and (result.x is None or fallback.fun <= result.fun):
+            result = fallback
     if result.x is None:
         raise ServiceError(422, "INFEASIBLE_CONSTRAINTS", "Operator constraints cannot be satisfied.")
 
