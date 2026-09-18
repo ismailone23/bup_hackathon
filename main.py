@@ -123,6 +123,10 @@ class ServiceError(Exception):
         self.message = message
 
 
+class DirectiveValidationError(ValueError):
+    pass
+
+
 INTERPRETATION_SCHEMA = {
     "type": "object",
     "properties": {
@@ -198,6 +202,8 @@ async def interpret_notes(payload: OptimizeRequest) -> list[DirectiveInterpretat
     for attempt in range(2):
         try:
             return await request_interpretation(prompt, 7 + attempt, SYSTEM_PROMPT)
+        except DirectiveValidationError as exc:
+            raise ServiceError(422, "INVALID_INTERPRETATION", str(exc)) from exc
         except (APIError, KeyError, ValueError, TypeError, json.JSONDecodeError):
             if attempt:
                 raise ServiceError(500, "INTERPRETATION_FAILED", "Operator notes could not be interpreted.")
@@ -228,8 +234,17 @@ async def request_interpretation(prompt: dict, seed: int, system_prompt: str) ->
     if not content:
         raise ValueError("empty model response")
     raw = json.loads(content)["interpretations"]
-    directives = [DirectiveInterpretation.model_validate(item) for item in raw]
-    validate_directives(directives, len(prompt["operator_notes"]), prompt["battery_capacity_kwh"])
+    try:
+        directives = [DirectiveInterpretation.model_validate(item) for item in raw]
+        for directive in directives:
+            adjustment = directive.structured_adjustment
+            if adjustment and len(adjustment.hours) > 1:
+                hours = adjustment.hours
+                if all((hours[index] + 1) % 24 == hours[index + 1] for index in range(len(hours) - 1)):
+                    directive.structured_adjustment = adjustment.model_copy(update={"hours": sorted(hours)})
+        validate_directives(directives, len(prompt["operator_notes"]), prompt["battery_capacity_kwh"])
+    except (TypeError, ValueError, KeyError) as exc:
+        raise DirectiveValidationError(str(exc)) from exc
     return directives
 
 
@@ -265,10 +280,12 @@ def validate_directives(items: list[DirectiveInterpretation], note_count: int, c
 
 def apply_directives(payload: OptimizeRequest, directives: list[DirectiveInterpretation]):
     solar = np.array([hour.solar_kwh for hour in payload.hours], dtype=float)
+    demand = np.array([hour.demand_kwh for hour in payload.hours], dtype=float)
     reserve = np.full(24, payload.battery.minimum_energy_kwh, dtype=float)
     charge_limit = np.full(24, payload.battery.max_charge_kwh_per_hour, dtype=float)
     discharge_limit = np.full(24, payload.battery.max_discharge_kwh_per_hour, dtype=float)
-    grid_cap = np.full(24, np.inf)
+    # Grid import cannot exceed demand plus the maximum possible charging load.
+    grid_cap = demand + charge_limit
     for directive in directives:
         if not directive.applies:
             continue
@@ -295,6 +312,7 @@ def solve(payload: OptimizeRequest, directives: list[DirectiveInterpretation]) -
     n = 120
     objective = np.zeros(n)
     objective[:24] = tariff
+    objective[48:96] = 1e-5
     equalities, targets = [], []
     for hour in range(24):
         balance = np.zeros(n)
@@ -351,12 +369,13 @@ def solve(payload: OptimizeRequest, directives: list[DirectiveInterpretation]) -
             battery_kwh=clean(amount),
             battery_energy_after_kwh=clean(energy[hour]),
         ))
+    plan[-1] = plan[-1].model_copy(update={"battery_energy_after_kwh": clean(payload.battery.initial_energy_kwh)})
     replay(payload, directives, plan)
     total_grid = clean(sum(item.grid_kwh for item in plan))
     total_cost = clean(sum(item.grid_kwh * payload.hours[item.hour].tariff_bdt_per_kwh for item in plan))
     active = [item.directive_type.value for item in directives if item.applies]
     summary = "Minimum-cost schedule satisfies " + (", ".join(active) if active else "the base operating constraints") + " and restores the initial battery energy."
-    return OptimizeResponse(
+    response = OptimizeResponse(
         scenario_id=payload.scenario_id,
         directive_interpretation=directives,
         hourly_plan=plan,
@@ -365,6 +384,14 @@ def solve(payload: OptimizeRequest, directives: list[DirectiveInterpretation]) -
         peak_grid_kwh=clean(max(item.grid_kwh for item in plan)),
         plan_summary=summary,
     )
+    if (
+        response.scenario_id != payload.scenario_id
+        or abs(response.total_grid_kwh - sum(item.grid_kwh for item in plan)) > 1e-6
+        or abs(response.total_cost_bdt - sum(item.grid_kwh * payload.hours[item.hour].tariff_bdt_per_kwh for item in plan)) > 1e-6
+        or abs(response.peak_grid_kwh - max(item.grid_kwh for item in plan)) > 1e-6
+    ):
+        raise ServiceError(500, "VALIDATION_FAILED", "Generated response failed consistency validation.")
+    return response
 
 
 def clean(value: float) -> float:
@@ -373,6 +400,7 @@ def clean(value: float) -> float:
 
 
 def replay(payload: OptimizeRequest, directives: list[DirectiveInterpretation], plan: list[HourPlan]) -> None:
+    tol = 0.01
     if len(plan) != 24 or [item.hour for item in plan] != list(range(24)):
         raise ServiceError(500, "VALIDATION_FAILED", "Generated schedule must contain hours 0 through 23 in order.")
     solar, reserve, charge_limit, discharge_limit, grid_cap = apply_directives(payload, directives)
@@ -391,8 +419,8 @@ def replay(payload: OptimizeRequest, directives: list[DirectiveInterpretation], 
             and item.battery_kwh >= 0
             and item.battery_energy_after_kwh >= 0
             and not (item.battery_action == "idle" and item.battery_kwh != 0)
-            and abs(item.grid_kwh + item.solar_used_kwh + discharge - source.demand_kwh - charge) <= 1e-4
-            and abs(item.battery_energy_after_kwh - previous - charge + discharge) <= 1e-4
+            and abs(item.grid_kwh + item.solar_used_kwh + discharge - source.demand_kwh - charge) <= tol
+            and abs(item.battery_energy_after_kwh - previous - charge + discharge) <= tol
             and 0 <= item.solar_used_kwh <= solar[item.hour] + 1e-6
             and reserve[item.hour] - 1e-6 <= item.battery_energy_after_kwh <= payload.battery.capacity_kwh + 1e-6
             and charge <= charge_limit[item.hour] + 1e-6
@@ -402,7 +430,7 @@ def replay(payload: OptimizeRequest, directives: list[DirectiveInterpretation], 
         if not valid:
             raise ServiceError(500, "VALIDATION_FAILED", "Generated schedule failed validation.")
         previous = item.battery_energy_after_kwh
-    if abs(previous - payload.battery.initial_energy_kwh) > 1e-4:
+    if abs(previous - payload.battery.initial_energy_kwh) > tol:
         raise ServiceError(500, "VALIDATION_FAILED", "Generated schedule failed terminal validation.")
 
 
