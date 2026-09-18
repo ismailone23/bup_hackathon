@@ -178,7 +178,7 @@ def _client() -> AsyncOpenAI:
         return OPENAI_CLIENT
     if not os.getenv("OPENAI_API_KEY"):
         raise ServiceError(500, "INTERPRETATION_FAILED", "Language model is not configured.")
-    OPENAI_CLIENT = AsyncOpenAI(timeout=float(os.getenv("OPENAI_TIMEOUT_SECONDS", "12")), max_retries=1)
+    OPENAI_CLIENT = AsyncOpenAI(timeout=float(os.getenv("OPENAI_TIMEOUT_SECONDS", "4.5")), max_retries=0)
     return OPENAI_CLIENT
 
 
@@ -187,22 +187,13 @@ async def interpret_notes(payload: OptimizeRequest) -> list[DirectiveInterpretat
         "battery_capacity_kwh": payload.battery.capacity_kwh,
         "operator_notes": payload.operator_notes,
     }
-    try:
-        first = await request_interpretation(prompt, 7, SYSTEM_PROMPT)
-        second = await request_interpretation(prompt, 19, SYSTEM_PROMPT)
-        if directive_fingerprint(first) == directive_fingerprint(second):
-            return first
-        adjudication_prompt = {
-            **prompt,
-            "candidate_a": [item.model_dump() for item in first],
-            "candidate_b": [item.model_dump() for item in second],
-            "instruction": "Choose the semantically correct candidate. Re-check every time boundary against the original notes.",
-        }
-        return await request_interpretation(adjudication_prompt, 31, SYSTEM_PROMPT)
-    except ServiceError:
-        raise
-    except (APIError, KeyError, ValueError, TypeError, json.JSONDecodeError) as exc:
-        raise ServiceError(500, "INTERPRETATION_FAILED", "Operator notes could not be interpreted.") from exc
+    for attempt in range(2):
+        try:
+            return await request_interpretation(prompt, 7 + attempt, SYSTEM_PROMPT)
+        except (APIError, KeyError, ValueError, TypeError, json.JSONDecodeError):
+            if attempt:
+                raise ServiceError(500, "INTERPRETATION_FAILED", "Operator notes could not be interpreted.")
+    raise ServiceError(500, "INTERPRETATION_FAILED", "Operator notes could not be interpreted.")
 
 
 async def request_interpretation(prompt: dict, seed: int, system_prompt: str) -> list[DirectiveInterpretation]:
@@ -218,6 +209,7 @@ async def request_interpretation(prompt: dict, seed: int, system_prompt: str) ->
             },
             temperature=0,
             seed=seed,
+            max_tokens=600,
     )
     content = completion.choices[0].message.content
     if not content:
@@ -226,21 +218,6 @@ async def request_interpretation(prompt: dict, seed: int, system_prompt: str) ->
     directives = [DirectiveInterpretation.model_validate(item) for item in raw]
     validate_directives(directives, len(prompt["operator_notes"]), prompt["battery_capacity_kwh"])
     return directives
-
-
-def directive_fingerprint(items: list[DirectiveInterpretation]) -> tuple:
-    return tuple(
-        (
-            item.note_index,
-            item.applies,
-            item.directive_type.value,
-            tuple(item.structured_adjustment.hours) if item.structured_adjustment else None,
-            item.structured_adjustment.factor if item.structured_adjustment else None,
-            item.structured_adjustment.minimum_energy_kwh if item.structured_adjustment else None,
-            item.structured_adjustment.max_grid_kwh if item.structured_adjustment else None,
-        )
-        for item in items
-    )
 
 
 def validate_directives(items: list[DirectiveInterpretation], note_count: int, capacity: float) -> None:
