@@ -202,10 +202,13 @@ Convert percentage/fraction reserves to kWh using the supplied battery capacity.
 Only solar-related notes (clouds, panel cleaning, PV output) are solar_reduction.
 Notes about demand, consumption, load, or tariff are not supported directives; mark them no_op.
 A note that permits an action only inside a window forbids it everywhere else: 'charging
-is allowed only from 2 PM to 4 PM' is no_charge_window over the other 22 hours.
+is allowed only from 2 PM to 4 PM' is no_charge_window over the other 22 hours, and
+'charging is permitted only from 11 PM to 1 AM' permits hours 23 and 0, so no_charge_window
+covers [1,2,3,...,21,22]. Never emit the permitted hours themselves as the no_charge_window.
 Open-ended windows such as 'from 6 PM' continue through hour 23. A vague period with no
-whole-hour clock boundary ('soon', 'starting now') is no_op. A vague term is never widened
-past its conventional period: 'morning' is about hours 6 through 11, never hours 0-5.
+whole-hour clock boundary ('soon', 'starting now', 'from now', 'overnight', 'later') is no_op.
+Use one fixed whole-hour meaning for each day part, never widened: 'morning' = hours 6-11,
+'midday' or 'noon' = hour 12, 'afternoon' = hours 12-17, 'evening' = hours 18-23.
 For no_op use applies=false and a null adjustment; otherwise use applies=true.
 For an adjustment, always include hours and all three nullable value fields. Populate only the field
 for that directive: factor, minimum_energy_kwh, or max_grid_kwh. Window directives use all null values.
