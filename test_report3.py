@@ -65,6 +65,11 @@ def mock_llm(monkeypatch, interpretation):
     return TestClient(main.app)
 
 
+def mock_raw(monkeypatch, content):
+    monkeypatch.setattr(main, "_client", lambda: FakeClient(content))
+    return TestClient(main.app)
+
+
 def interpretation(directive_type, applies=True, adjustment=None):
     return {
         "note_index": 0,
@@ -105,3 +110,27 @@ def test_model_hours_are_not_derived_from_note_text(monkeypatch):
     hours = payload["directive_interpretation"][0]["structured_adjustment"]["hours"]
     assert set(hours) == {0, 1, 2, 3, 4, 5, 23}
     assert len(payload["hourly_plan"]) == 24
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["{not valid json}", json.dumps({"nope": []}), json.dumps({"interpretations": "oops"})],
+    ids=["invalid json", "missing key", "not a list"],
+)
+def test_unusable_provider_payload_returns_500(monkeypatch, content):
+    client = mock_raw(monkeypatch, content)
+    response = client.post("/optimize-energy", json=body("The cafeteria menu changes."))
+    assert response.status_code == 500, response.text
+    assert response.json()["error"]["code"] == "INTERPRETATION_FAILED"
+
+
+def test_battery_action_matches_magnitude(monkeypatch):
+    item = interpretation("no_op", applies=False, adjustment=None)
+    client = mock_llm(monkeypatch, item)
+    response = client.post("/optimize-energy", json=body("The cafeteria menu changes."))
+    assert response.status_code == 200, response.text
+    for row in response.json()["hourly_plan"]:
+        if row["battery_action"] == "idle":
+            assert row["battery_kwh"] == 0
+        else:
+            assert row["battery_kwh"] > 0

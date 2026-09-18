@@ -210,7 +210,7 @@ async def interpret_notes(payload: OptimizeRequest) -> list[DirectiveInterpretat
             return await request_interpretation(prompt, 7 + attempt, SYSTEM_PROMPT)
         except DirectiveValidationError as exc:
             raise ServiceError(422, "INVALID_INTERPRETATION", str(exc)) from exc
-        except (APIError, KeyError, ValueError, TypeError, json.JSONDecodeError):
+        except (APIError, IndexError, KeyError, ValueError, TypeError, json.JSONDecodeError):
             if attempt:
                 raise ServiceError(500, "INTERPRETATION_FAILED", "Operator notes could not be interpreted.")
     raise ServiceError(500, "INTERPRETATION_FAILED", "Operator notes could not be interpreted.")
@@ -240,6 +240,8 @@ async def request_interpretation(prompt: dict, seed: int, system_prompt: str) ->
     if not content:
         raise ValueError("empty model response")
     raw = json.loads(content)["interpretations"]
+    if not isinstance(raw, list) or any(not isinstance(item, dict) for item in raw):
+        raise ValueError("model response must be a list of interpretation objects")
     try:
         directives = [DirectiveInterpretation.model_validate(item) for item in raw]
         for directive in directives:
@@ -361,10 +363,10 @@ def solve(payload: OptimizeRequest, directives: list[DirectiveInterpretation]) -
     grid, solar_used, charge, discharge, energy = np.split(result.x, 5)
     plan = []
     for hour in range(24):
-        net = charge[hour] - discharge[hour]
-        if net > 1e-7:
+        net = clean(charge[hour] - discharge[hour])
+        if net > 0:
             action, amount = "charge", net
-        elif net < -1e-7:
+        elif net < 0:
             action, amount = "discharge", -net
         else:
             action, amount = "idle", 0.0
@@ -373,10 +375,9 @@ def solve(payload: OptimizeRequest, directives: list[DirectiveInterpretation]) -
             grid_kwh=clean(grid[hour]),
             solar_used_kwh=clean(solar_used[hour]),
             battery_action=action,
-            battery_kwh=clean(amount),
+            battery_kwh=amount,
             battery_energy_after_kwh=clean(energy[hour]),
         ))
-    plan[-1] = plan[-1].model_copy(update={"battery_energy_after_kwh": clean(payload.battery.initial_energy_kwh)})
     replay(payload, directives, plan)
     total_grid = clean(sum(item.grid_kwh for item in plan))
     total_cost = clean(sum(item.grid_kwh * payload.hours[item.hour].tariff_bdt_per_kwh for item in plan))
