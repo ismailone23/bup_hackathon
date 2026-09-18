@@ -8,3 +8,7 @@ __pycache__
 *.log
 BUP_CSE_FEST_2026_Participant_Docs
 test_*.py
+benchmark.py
+validate_public.py
+REQUIREMENTS.md
+AGENTS.md

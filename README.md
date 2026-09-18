@@ -199,6 +199,11 @@ the stated grid cost, with no battery-use term, so the returned schedule is the
 minimum-cost valid plan. Returned totals are recalculated from the returned
 hourly values.
 
+Overlapping `solar_reduction` directives compose multiplicatively: every
+directive that covers an hour multiplies the effective solar at that hour by its
+`factor`. The published formula does not define a composition rule, so this is a
+documented provisional choice rather than an inferred behavior.
+
 ## Validation
 
 ### Health check
@@ -246,17 +251,20 @@ Verify the container:
 curl http://127.0.0.1:8000/health
 ```
 
-For submission, publish the image to a registry (GHCR or Docker Hub) with an
-exact immutable tag, then hand organizers the pullable reference:
+For submission, the fallback image is published to GHCR:
+
+```bash
+docker pull ghcr.io/ismailone23/gridwise:latest
+docker run --rm -p 8000:8000 -e OPENAI_API_KEY=<key> \
+  ghcr.io/ismailone23/gridwise:latest
+```
+
+Rebuild and republish from source:
 
 ```bash
 docker build -t gridwise:local .
-docker tag gridwise:local ghcr.io/<owner>/gridwise:2026-prelim
-docker push ghcr.io/<owner>/gridwise:2026-prelim
-
-# what organizers run
-docker run --rm -p 8000:8000 -e OPENAI_API_KEY=<key> \
-  ghcr.io/<owner>/gridwise:2026-prelim
+docker tag gridwise:local ghcr.io/ismailone23/gridwise:latest
+docker push ghcr.io/ismailone23/gridwise:latest
 ```
 
 ## Railway Deployment

@@ -59,7 +59,7 @@ class BatteryInput(BaseModel):
 
 class OptimizeRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    scenario_id: Annotated[StrictStr, Field(min_length=1)]
+    scenario_id: Annotated[StrictStr, Field(min_length=1, max_length=128)]
     operator_notes: Annotated[list[Annotated[StrictStr, Field(max_length=1000)]], Field(min_length=1, max_length=3)]
     hours: Annotated[list[HourInput], Field(min_length=24, max_length=24)]
     battery: BatteryInput
