@@ -273,6 +273,26 @@ def test_non_finite_input_should_fail(bad):
         main.OptimizeRequest.model_validate(body)
 
 
+def test_integer_json_values_are_accepted():
+    body = {
+        "scenario_id": "int-test",
+        "operator_notes": ["No-op"],
+        "hours": [{"hour": h, "demand_kwh": 50, "solar_kwh": 30, "tariff_bdt_per_kwh": 4} for h in range(24)],
+        "battery": {
+            "capacity_kwh": 80,
+            "initial_energy_kwh": 40,
+            "minimum_energy_kwh": 0,
+            "max_charge_kwh_per_hour": 20,
+            "max_discharge_kwh_per_hour": 20,
+        },
+    }
+    validated = main.OptimizeRequest.model_validate(body)
+    assert validated.hours[0].demand_kwh == 50.0
+    body["hours"][0]["demand_kwh"] = "50"
+    with pytest.raises(pydantic.ValidationError):
+        main.OptimizeRequest.model_validate(body)
+
+
 # ---------------------------------------------------------
 # 10. Dependency / Deployment Tests
 # ---------------------------------------------------------

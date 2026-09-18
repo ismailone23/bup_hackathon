@@ -59,6 +59,23 @@ class FakeClient:
         self.chat = type("Chat", (), {"completions": FakeCompletions(content)})()
 
 
+class SequentialCompletions:
+    def __init__(self, contents):
+        self.contents = list(contents)
+        self.calls = 0
+
+    async def create(self, **_kwargs):
+        content = self.contents[min(self.calls, len(self.contents) - 1)]
+        self.calls += 1
+        return FakeCompletion(content)
+
+
+class SequentialClient:
+    def __init__(self, contents):
+        self.completions = SequentialCompletions(contents)
+        self.chat = type("Chat", (), {"completions": self.completions})()
+
+
 def mock_llm(monkeypatch, interpretation):
     content = json.dumps({"interpretations": [interpretation]})
     monkeypatch.setattr(main, "_client", lambda: FakeClient(content))
@@ -134,3 +151,13 @@ def test_battery_action_matches_magnitude(monkeypatch):
             assert row["battery_kwh"] == 0
         else:
             assert row["battery_kwh"] > 0
+
+
+def test_invalid_interpretation_is_retried(monkeypatch):
+    invalid = json.dumps({"interpretations": [interpretation("no_op", applies=True, adjustment=None)]})
+    valid = json.dumps({"interpretations": [interpretation("no_op", applies=False, adjustment=None)]})
+    client = SequentialClient([invalid, valid])
+    monkeypatch.setattr(main, "_client", lambda: client)
+    response = TestClient(main.app).post("/optimize-energy", json=body("The cafeteria menu changes."))
+    assert response.status_code == 200, response.text
+    assert client.completions.calls == 2

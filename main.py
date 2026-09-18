@@ -211,7 +211,8 @@ async def interpret_notes(payload: OptimizeRequest) -> list[DirectiveInterpretat
         try:
             return await request_interpretation(prompt, 7 + attempt, SYSTEM_PROMPT)
         except DirectiveValidationError as exc:
-            raise ServiceError(422, "INVALID_INTERPRETATION", str(exc)) from exc
+            if attempt:
+                raise ServiceError(422, "INVALID_INTERPRETATION", str(exc)) from exc
         except (APIError, IndexError, KeyError, ValueError, TypeError, json.JSONDecodeError):
             if attempt:
                 raise ServiceError(500, "INTERPRETATION_FAILED", "Operator notes could not be interpreted.")
