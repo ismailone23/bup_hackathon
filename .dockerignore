@@ -1,0 +1,10 @@
+.env
+.git
+.venv
+__pycache__
+.pytest_cache
+*.pyc
+*.pyo
+*.log
+BUP_CSE_FEST_2026_Participant_Docs
+test_main.py
