@@ -194,53 +194,38 @@ sum(grid_kwh[h] * tariff_bdt_per_kwh[h]) for h = 0..23
 
 It enforces hourly energy balance, solar availability, battery capacity and
 reserve, charge/discharge limits, directive-specific limits, non-negative
-serialized values, and end-of-day battery neutrality. A small regularization
-term prevents unnecessary simultaneous charge/discharge cycles. Returned totals
-are recalculated from the returned hourly values.
+serialized values, and end-of-day battery neutrality. The LP objective is exactly
+the stated grid cost, with no battery-use term, so the returned schedule is the
+minimum-cost valid plan. Returned totals are recalculated from the returned
+hourly values.
 
-## Testing
+## Validation
 
-Run all local tests:
-
-```bash
-python -m pytest -q
-```
-
-The suite includes optimizer/replay tests, strict guardrail tests, provider
-failure tests, API validation tests, and teammate test files. A clean run is
-expected to report all tests passed. Tests do not require a live OpenAI key
-unless explicitly marked as a live-model test.
-
-Ten additional hard interpretation cases run live against the real model. They
-are skipped by default and enabled with an environment flag:
+### Health check
 
 ```bash
-GRIDWISE_LIVE_TESTS=1 python -m pytest -q test_live_llm.py -v
+curl -s http://127.0.0.1:8000/health
 ```
+
+Expected: `{"status":"ok"}`.
 
 ### Public sample cases
 
-The public pack contains 10 reference cases. They are not the hidden judge
-set, and reference schedules do not need to match byte-for-byte. The included
-validator compares interpreted directive semantics (ignoring explanation
-wording) and the recalculated cost against each reference within the challenge
-tolerance of `0.01` kWh/BDT.
-
-Keep the official pack anywhere on disk and pass its path plus your base URL.
-With the service running and `OPENAI_API_KEY` configured:
+The public pack contains 10 reference cases. They are not the hidden judge set,
+and reference schedules do not need to match byte-for-byte. With the service
+running and `OPENAI_API_KEY` configured, post a case's `input` object:
 
 ```bash
-python validate_public.py /path/to/public_sample_cases.json http://127.0.0.1:8000
+curl -s -X POST http://127.0.0.1:8000/optimize-energy \
+  -H "Content-Type: application/json" \
+  -d @case_input.json
 ```
 
-Expected result: ten `PASS` lines and `cases=10 failures=0`. With
-`gpt-4.1-mini` the recalculated cost delta is `0.00` on every public case.
-
-Latency can be measured with the bundled harness:
-
-```bash
-python benchmark.py /path/to/public_sample_cases.json http://127.0.0.1:8000
-```
+Save the `input` object of a public sample as `case_input.json`. Then confirm the
+response contains exactly one `directive_interpretation` entry per note in
+`note_index` order, a 24-row `hourly_plan`, and a `total_cost_bdt` within `0.01`
+of that case's reference `expected_output.total_cost_bdt`. With `gpt-4.1-mini`
+the recalculated cost delta is `0.00` on every public case.
 
 ## Docker Fallback
 
@@ -305,7 +290,6 @@ enforces a tighter limit; responses beyond 30 seconds count as failures.
 - NumPy: linear-program arrays and numeric operations
 - SciPy `linprog`: deterministic minimum-cost optimization
 - python-dotenv: local `.env` loading
-- Pytest: automated verification
 
 These are public libraries used under their respective licenses. The solution
 uses no live campus, utility, billing, or personal data. AI coding assistants

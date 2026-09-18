@@ -7,4 +7,4 @@ __pycache__
 *.pyo
 *.log
 BUP_CSE_FEST_2026_Participant_Docs
-test_main.py
+test_*.py
