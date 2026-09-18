@@ -164,6 +164,13 @@ failure tests, API validation tests, and teammate test files. A clean run is
 expected to report all tests passed. Tests do not require a live OpenAI key
 unless explicitly marked as a live-model test.
 
+Ten additional hard interpretation cases run live against the real model. They
+are skipped by default and enabled with an environment flag:
+
+```bash
+GRIDWISE_LIVE_TESTS=1 python -m pytest -q test_live_llm.py -v
+```
+
 ### Public sample cases
 
 The public pack contains 10 reference cases. They are not the hidden judge
