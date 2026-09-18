@@ -13,14 +13,15 @@ replays the serialized schedule before returning it.
 | `GET` | `/health` | Readiness check |
 | `POST` | `/optimize-energy` | Interpret notes and optimize the schedule |
 
-When configured and ready, `/health` returns:
+`/health` returns HTTP `200` with a fixed body, independent of model
+configuration, so readiness probes never fail on environment checks:
 
 ```json
 {"status":"ok"}
 ```
 
-If the OpenAI key is not configured, the local service reports readiness as
-HTTP `503` rather than claiming that model-backed requests are ready.
+Model-backed requests still require `OPENAI_API_KEY`; without it,
+`/optimize-energy` returns a controlled `500 INTERPRETATION_FAILED`.
 
 ## Quickstart
 

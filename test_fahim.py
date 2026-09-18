@@ -12,6 +12,8 @@ Adjust import paths if the project module name changes.
 
 import json
 import pytest
+import pydantic
+from fastapi.testclient import TestClient
 
 
 # ---------------------------------------------------------
@@ -50,24 +52,14 @@ def no_op():
 # 1. Health Endpoint Tests
 # ---------------------------------------------------------
 
-def test_health_should_not_depend_on_openai_key():
+def test_health_should_not_depend_on_openai_key(monkeypatch):
     """
-    Issue:
-    /health currently depends on OPENAI_API_KEY.
-
-    Expected:
-    Application health should return:
-        HTTP 200
-        {"status":"ok"}
-
-    without requiring external services.
+    Health must report readiness without requiring the model key.
     """
-
-    expected = {
-        "status": "ok"
-    }
-
-    assert expected["status"] == "ok"
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    response = TestClient(main.app).get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
 
 
 # ---------------------------------------------------------
@@ -257,28 +249,28 @@ def test_large_operator_note_should_be_limited():
 # 9. API Input Validation Tests
 # ---------------------------------------------------------
 
-@pytest.mark.skipif(main is None, reason="Project import failed")
-def test_nan_input_should_fail():
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_input_should_fail(bad):
+    body = {
+        "scenario_id": "non-finite-test",
+        "operator_notes": ["No-op"],
+        "hours": [{"hour": h, "demand_kwh": 1.0, "solar_kwh": 0.0, "tariff_bdt_per_kwh": 1.0} for h in range(24)],
+        "battery": {
+            "capacity_kwh": 20.0,
+            "initial_energy_kwh": 10.0,
+            "minimum_energy_kwh": 0.0,
+            "max_charge_kwh_per_hour": 5.0,
+            "max_discharge_kwh_per_hour": 5.0,
+        },
+    }
+    body["hours"][0]["demand_kwh"] = bad
+    with pytest.raises(pydantic.ValidationError):
+        main.OptimizeRequest.model_validate(body)
 
-    with pytest.raises(Exception):
-        main.ScenarioRequest(
-            scenario_id="nan-test",
-            demand_kw=[float("nan")] * 24,
-            solar_kw=[1] * 24,
-            tariff_bdt_per_kwh=[1] * 24
-        )
-
-
-@pytest.mark.skipif(main is None, reason="Project import failed")
-def test_infinite_input_should_fail():
-
-    with pytest.raises(Exception):
-        main.ScenarioRequest(
-            scenario_id="inf-test",
-            demand_kw=[float("inf")] * 24,
-            solar_kw=[1] * 24,
-            tariff_bdt_per_kwh=[1] * 24
-        )
+    body["hours"][0]["demand_kwh"] = 1.0
+    body["hours"][0]["tariff_bdt_per_kwh"] = bad
+    with pytest.raises(pydantic.ValidationError):
+        main.OptimizeRequest.model_validate(body)
 
 
 # ---------------------------------------------------------
@@ -297,3 +289,68 @@ def test_openai_dependency_should_exist():
         pytest.fail(
             "openai package missing from requirements.txt"
         )
+
+
+# ---------------------------------------------------------
+# 11. Hardened Guard Tests
+# ---------------------------------------------------------
+
+def directive(kind, hours, **values):
+    return main.DirectiveInterpretation(
+        note_index=0,
+        applies=True,
+        directive_type=kind,
+        structured_adjustment=main.StructuredAdjustment(hours=hours, **values),
+        explanation="validated directive",
+    )
+
+
+def test_infeasible_constraints_return_422_not_500():
+    hours = [{"hour": h, "demand_kwh": 10, "solar_kwh": 0, "tariff_bdt_per_kwh": 5} for h in range(24)]
+    with pytest.raises(main.ServiceError) as exc:
+        main.solve(scenario(hours), [directive("max_grid_window", [0], max_grid_kwh=0)])
+    assert exc.value.status == 422
+    assert exc.value.code == "INFEASIBLE_CONSTRAINTS"
+
+
+def test_solve_validates_directives_before_optimizing():
+    hours = [{"hour": h, "demand_kwh": 10, "solar_kwh": 0, "tariff_bdt_per_kwh": 5} for h in range(24)]
+    with pytest.raises(main.ServiceError) as exc:
+        main.solve(scenario(hours), [directive("solar_reduction", [12], factor=None)])
+    assert exc.value.status == 422
+    assert exc.value.code == "INVALID_INTERPRETATION"
+
+
+def test_charge_action_must_have_positive_magnitude():
+    with pytest.raises(pydantic.ValidationError):
+        main.HourPlan.model_validate({
+            "hour": 0, "grid_kwh": 0.0, "solar_used_kwh": 0.0,
+            "battery_action": "charge", "battery_kwh": 0.0, "battery_energy_after_kwh": 10.0,
+        })
+
+
+def test_replay_rejects_small_balance_error():
+    hours = [{"hour": h, "demand_kwh": 10, "solar_kwh": 0, "tariff_bdt_per_kwh": 5} for h in range(24)]
+    payload = scenario(hours)
+    directives = no_op()
+    plan = main.solve(payload, directives).hourly_plan
+    skewed = [plan[0].model_copy(update={"grid_kwh": plan[0].grid_kwh + 0.005})] + plan[1:]
+    with pytest.raises(main.ServiceError):
+        main.replay(payload, directives, skewed)
+
+
+def test_operator_note_length_is_bounded():
+    body = {
+        "scenario_id": "long-note",
+        "operator_notes": ["X" * 1001],
+        "hours": [{"hour": h, "demand_kwh": 1.0, "solar_kwh": 0.0, "tariff_bdt_per_kwh": 1.0} for h in range(24)],
+        "battery": {
+            "capacity_kwh": 20.0,
+            "initial_energy_kwh": 10.0,
+            "minimum_energy_kwh": 0.0,
+            "max_charge_kwh_per_hour": 5.0,
+            "max_discharge_kwh_per_hour": 5.0,
+        },
+    }
+    with pytest.raises(pydantic.ValidationError):
+        main.OptimizeRequest.model_validate(body)

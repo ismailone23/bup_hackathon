@@ -56,7 +56,7 @@ class BatteryInput(BaseModel):
 class OptimizeRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
     scenario_id: StrictStr
-    operator_notes: Annotated[list[StrictStr], Field(min_length=1, max_length=3)]
+    operator_notes: Annotated[list[Annotated[StrictStr, Field(max_length=1000)]], Field(min_length=1, max_length=3)]
     hours: Annotated[list[HourInput], Field(min_length=24, max_length=24)]
     battery: BatteryInput
 
@@ -105,6 +105,8 @@ class HourPlan(BaseModel):
             raise ValueError("plan energy values must be non-negative")
         if self.battery_action == "idle" and self.battery_kwh != 0:
             raise ValueError("idle battery action must have zero battery_kwh")
+        if self.battery_action != "idle" and self.battery_kwh <= 0:
+            raise ValueError("non-idle battery action must have positive battery_kwh")
         return self
 
 
@@ -314,6 +316,10 @@ def apply_directives(payload: OptimizeRequest, directives: list[DirectiveInterpr
 
 
 def solve(payload: OptimizeRequest, directives: list[DirectiveInterpretation]) -> OptimizeResponse:
+    try:
+        validate_directives(directives, len(payload.operator_notes), payload.battery.capacity_kwh)
+    except (TypeError, ValueError) as exc:
+        raise ServiceError(422, "INVALID_INTERPRETATION", str(exc)) from exc
     solar, reserve, charge_limit, discharge_limit, grid_cap = apply_directives(payload, directives)
     demand = np.array([hour.demand_kwh for hour in payload.hours])
     tariff = np.array([hour.tariff_bdt_per_kwh for hour in payload.hours])
@@ -358,7 +364,7 @@ def solve(payload: OptimizeRequest, directives: list[DirectiveInterpretation]) -
 
     result = linprog(objective, A_eq=np.array(equalities), b_eq=np.array(targets), bounds=bounds, method="highs")
     if not result.success:
-        raise ServiceError(500, "OPTIMIZATION_FAILED", "No valid energy schedule could be produced.")
+        raise ServiceError(422, "INFEASIBLE_CONSTRAINTS", "Operator constraints cannot be satisfied.")
 
     grid, solar_used, charge, discharge, energy = np.split(result.x, 5)
     plan = []
@@ -408,7 +414,7 @@ def clean(value: float) -> float:
 
 
 def replay(payload: OptimizeRequest, directives: list[DirectiveInterpretation], plan: list[HourPlan]) -> None:
-    tol = 0.01
+    tol = 1e-5
     if len(plan) != 24 or [item.hour for item in plan] != list(range(24)):
         raise ServiceError(500, "VALIDATION_FAILED", "Generated schedule must contain hours 0 through 23 in order.")
     solar, reserve, charge_limit, discharge_limit, grid_cap = apply_directives(payload, directives)
@@ -427,6 +433,7 @@ def replay(payload: OptimizeRequest, directives: list[DirectiveInterpretation], 
             and item.battery_kwh >= 0
             and item.battery_energy_after_kwh >= 0
             and not (item.battery_action == "idle" and item.battery_kwh != 0)
+            and not (item.battery_action != "idle" and item.battery_kwh <= 0)
             and abs(item.grid_kwh + item.solar_used_kwh + discharge - source.demand_kwh - charge) <= tol
             and abs(item.battery_energy_after_kwh - previous - charge + discharge) <= tol
             and 0 <= item.solar_used_kwh <= solar[item.hour] + 1e-6
@@ -470,8 +477,6 @@ async def internal_error_handler(_request: Request, _exc: Exception):
 
 @app.get("/health")
 async def health():
-    if not os.getenv("OPENAI_API_KEY"):
-        return JSONResponse(status_code=503, content={"status": "unavailable"})
     return {"status": "ok"}
 
 

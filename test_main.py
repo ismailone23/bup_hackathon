@@ -115,8 +115,8 @@ def test_replay_rejects_bad_plan_shapes_and_values():
         HourPlan.model_validate({**valid[0].model_dump(), "battery_kwh": -1})
 
 
-def test_health_requires_model_configuration(monkeypatch):
+def test_health_does_not_require_model_configuration(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     response = TestClient(app).get("/health")
-    assert response.status_code == 503
-    assert response.json() == {"status": "unavailable"}
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
