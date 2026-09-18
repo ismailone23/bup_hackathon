@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import re
 from enum import Enum
 from typing import Annotated, Literal
 
@@ -170,6 +171,8 @@ Return exactly one entry per note in note_index order. Supported directives are 
 minimum_battery_reserve, no_charge_window, no_discharge_window, max_grid_window, and no_op.
 Windows are start-inclusive and end-exclusive: '2 AM until 5 AM' means [2,3,4],
 '6 PM until 9 PM' means [18,19,20], and '11 AM until 1 PM' means [11,12].
+For a window that crosses midnight, continue through hour 23, wrap to hour 0,
+and stop before the ending hour; '10 PM until 6 AM' means [0,1,2,3,4,5,21,22,23].
 The ending clock time is a boundary, never an included hour. Emit sorted unique hours 0 through 23.
 A reduction BY 80% leaves factor 0.2; reduction TO 80% means factor 0.8.
 Convert percentage/fraction reserves to kWh using the supplied battery capacity.
@@ -242,6 +245,15 @@ async def request_interpretation(prompt: dict, seed: int, system_prompt: str) ->
                 hours = adjustment.hours
                 if all((hours[index] + 1) % 24 == hours[index + 1] for index in range(len(hours) - 1)):
                     directive.structured_adjustment = adjustment.model_copy(update={"hours": sorted(hours)})
+                note = prompt["operator_notes"][directive.note_index]
+                match = re.search(r"(\d{1,2})\s*(am|pm).*?(?:until|to)\s*(\d{1,2})\s*(am|pm)", note, re.IGNORECASE)
+                if match:
+                    start = int(match.group(1)) % 12 + (12 if match.group(2).lower() == "pm" else 0)
+                    end = int(match.group(3)) % 12 + (12 if match.group(4).lower() == "pm" else 0)
+                    if end <= start:
+                        expected = sorted(set(range(start, 24)) | set(range(0, end)))
+                        if set(hours).issubset(expected):
+                            directive.structured_adjustment = adjustment.model_copy(update={"hours": expected})
         validate_directives(directives, len(prompt["operator_notes"]), prompt["battery_capacity_kwh"])
     except (TypeError, ValueError, KeyError) as exc:
         raise DirectiveValidationError(str(exc)) from exc

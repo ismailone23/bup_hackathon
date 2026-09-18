@@ -42,7 +42,7 @@ def test_mobin_rejects_no_op_with_adjustment():
 
 @NEEDS_KEY
 def test_mobin_cross_midnight_ten_pm_to_six_am():
-    """FAIL: 'ten at night' loses hour 21 — model returns {0..5, 22, 23}."""
+    """A 10 PM to 6 AM window covers hours 22, 23, then 0 through 5."""
     req = OptimizeRequest.model_validate({
         "scenario_id": "MUST-01",
         "operator_notes": ["Do not charge from 10 PM to 6 AM."],
@@ -52,6 +52,6 @@ def test_mobin_cross_midnight_ten_pm_to_six_am():
     directives = asyncio.run(interpret_notes(req))
     first = directives[0]
     assert first.directive_type.value == "no_charge_window"
-    assert set(first.structured_adjustment.hours) == {0, 1, 2, 3, 4, 5, 21, 22, 23}
+    assert set(first.structured_adjustment.hours) == {0, 1, 2, 3, 4, 5, 22, 23}
     resp = solve(req, directives)
     assert abs(resp.total_cost_bdt - 5920.0) <= 0.01
