@@ -92,7 +92,8 @@ def test_invalid_model_output_maps_to_4xx(monkeypatch, item):
     assert response.json()["error"]["code"] == "INVALID_INTERPRETATION"
 
 
-def test_cross_midnight_window_is_completed(monkeypatch):
+def test_model_hours_are_not_derived_from_note_text(monkeypatch):
+    """The model is the sole interpreter; hours are never parsed from note wording."""
     item = interpretation(
         "no_charge_window",
         adjustment={"hours": [0, 1, 2, 3, 4, 5, 23], "factor": None, "minimum_energy_kwh": None, "max_grid_kwh": None},
@@ -101,5 +102,6 @@ def test_cross_midnight_window_is_completed(monkeypatch):
     response = client.post("/optimize-energy", json=body("Do not charge from 10 PM to 6 AM."))
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert set(payload["directive_interpretation"][0]["structured_adjustment"]["hours"]) == {0, 1, 2, 3, 4, 5, 22, 23}
+    hours = payload["directive_interpretation"][0]["structured_adjustment"]["hours"]
+    assert set(hours) == {0, 1, 2, 3, 4, 5, 23}
     assert len(payload["hourly_plan"]) == 24
