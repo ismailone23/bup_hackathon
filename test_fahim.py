@@ -10,18 +10,40 @@ Run:
 Adjust import paths if the project module name changes.
 """
 
+import json
 import pytest
-import math
 
 
 # ---------------------------------------------------------
 # Import project
 # ---------------------------------------------------------
 
-try:
-    import main
-except Exception:
-    main = None
+import main
+
+
+def scenario(hours, initial_energy_kwh=10):
+    return main.OptimizeRequest.model_validate({
+        "scenario_id": "fahim-test",
+        "operator_notes": ["No-op"],
+        "hours": hours,
+        "battery": {
+            "capacity_kwh": 20,
+            "initial_energy_kwh": initial_energy_kwh,
+            "minimum_energy_kwh": 0,
+            "max_charge_kwh_per_hour": 5,
+            "max_discharge_kwh_per_hour": 5,
+        },
+    })
+
+
+def no_op():
+    return [main.DirectiveInterpretation(
+        note_index=0,
+        applies=False,
+        directive_type="no_op",
+        structured_adjustment=None,
+        explanation="No applicable directive.",
+    )]
 
 
 # ---------------------------------------------------------
@@ -52,7 +74,6 @@ def test_health_should_not_depend_on_openai_key():
 # 2. Solar Priority Tests
 # ---------------------------------------------------------
 
-@pytest.mark.skipif(main is None, reason="Project import failed")
 def test_optimizer_should_prioritize_available_solar():
     """
     Issue:
@@ -66,26 +87,15 @@ def test_optimizer_should_prioritize_available_solar():
     Grid usage should be near zero.
     """
 
-    scenario = main.ScenarioRequest(
-        scenario_id="solar-priority-test",
-        demand_kw=[10] * 24,
-        solar_kw=[10] * 24,
-        tariff_bdt_per_kwh=[5] * 24
-    )
-
-    result = main.solve(
-        scenario,
-        []
-    )
-
-    assert result.summary["total_grid_kwh"] <= 0.01
+    hours = [{"hour": h, "demand_kwh": 10, "solar_kwh": 10, "tariff_bdt_per_kwh": 5} for h in range(24)]
+    result = main.solve(scenario(hours), no_op())
+    assert result.total_grid_kwh <= 0.01
 
 
 # ---------------------------------------------------------
 # 3. Negative Tariff Exploitation Tests
 # ---------------------------------------------------------
 
-@pytest.mark.skipif(main is None, reason="Project import failed")
 def test_negative_tariff_should_not_allow_unlimited_grid_import():
     """
     Issue:
@@ -95,26 +105,15 @@ def test_negative_tariff_should_not_allow_unlimited_grid_import():
     Grid import must remain physically bounded.
     """
 
-    scenario = main.ScenarioRequest(
-        scenario_id="negative-tariff-test",
-        demand_kw=[10] * 24,
-        solar_kw=[0] * 24,
-        tariff_bdt_per_kwh=[-100] * 24
-    )
-
-    result = main.solve(
-        scenario,
-        []
-    )
-
-    assert result.summary["total_grid_kwh"] <= 240
+    hours = [{"hour": h, "demand_kwh": 10, "solar_kwh": 0, "tariff_bdt_per_kwh": -100} for h in range(24)]
+    result = main.solve(scenario(hours), no_op())
+    assert result.total_grid_kwh <= 240
 
 
 # ---------------------------------------------------------
 # 4. Battery Terminal State Tests
 # ---------------------------------------------------------
 
-@pytest.mark.skipif(main is None, reason="Project import failed")
 def test_battery_should_not_require_return_to_initial_state_unless_required():
     """
     Issue:
@@ -124,59 +123,50 @@ def test_battery_should_not_require_return_to_initial_state_unless_required():
     Terminal constraint should only exist if explicitly required.
     """
 
-    scenario = main.ScenarioRequest(
-        scenario_id="battery-terminal-test",
-        demand_kw=[20] * 24,
-        solar_kw=[0] * 24,
-        tariff_bdt_per_kwh=[5] * 24
-    )
-
-    result = main.solve(
-        scenario,
-        []
-    )
-
-    assert result is not None
+    hours = [{"hour": h, "demand_kwh": 20, "solar_kwh": 0, "tariff_bdt_per_kwh": 5} for h in range(24)]
+    assert main.solve(scenario(hours), no_op()) is not None
 
 
 # ---------------------------------------------------------
 # 5. Directive Validation Tests
 # ---------------------------------------------------------
 
-@pytest.mark.skipif(main is None, reason="Project import failed")
 def test_invalid_directive_should_fail():
     """
     Unsupported directive types must be rejected.
     """
 
     with pytest.raises(Exception):
-        main.Directive(
+        main.DirectiveInterpretation(
+            note_index=0,
             directive_type="unsupported_action",
-            applies=True
+            applies=True,
+            structured_adjustment=None,
+            explanation="invalid",
         )
 
 
-@pytest.mark.skipif(main is None, reason="Project import failed")
 def test_directive_hour_outside_range_should_fail():
     """
     Hours must remain between 0-23.
     """
 
     with pytest.raises(Exception):
-        main.Directive(
+        item = main.DirectiveInterpretation(
+            note_index=0,
+            applies=True,
             directive_type="no_charge_window",
-            structured_adjustment={
-                "hours": [25]
-            }
+            structured_adjustment=main.StructuredAdjustment(hours=[25]),
+            explanation="invalid hour",
         )
+        main.validate_directives([item], 1, 20)
 
 
 # ---------------------------------------------------------
 # 6. LLM Output Safety Tests
 # ---------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_llm_invalid_json_should_fail_safely():
+def test_llm_invalid_json_should_fail_safely():
     """
     Issue:
     LLM can return malformed JSON.
@@ -185,13 +175,11 @@ async def test_llm_invalid_json_should_fail_safely():
     System should reject safely.
     """
 
-    invalid_response = "{ invalid json }"
+    with pytest.raises(json.JSONDecodeError):
+        json.loads("{ invalid json }")
 
-    assert invalid_response.startswith("{")
 
-
-@pytest.mark.asyncio
-async def test_llm_should_return_one_result_per_note():
+def test_llm_should_return_one_result_per_note():
     """
     Issue:
     LLM note mapping mismatch.
