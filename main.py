@@ -1,7 +1,9 @@
+import asyncio
 import json
 import math
 import os
 import re
+from contextlib import asynccontextmanager
 from enum import Enum
 from typing import Annotated, Literal
 
@@ -185,6 +187,7 @@ normalization, note index, and whether the note is an unrelated distractor."""
 
 
 OPENAI_CLIENT: AsyncOpenAI | None = None
+REQUEST_DEADLINE_SECONDS = float(os.getenv("REQUEST_DEADLINE_SECONDS", "18"))
 
 
 def _client() -> AsyncOpenAI:
@@ -448,7 +451,15 @@ def replay(payload: OptimizeRequest, directives: list[DirectiveInterpretation], 
         raise ServiceError(500, "VALIDATION_FAILED", "Generated schedule failed terminal validation.")
 
 
-app = FastAPI(title="GridWise LLM")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # ponytail: keeps the first request off the cold-start path
+    if os.getenv("OPENAI_API_KEY"):
+        _client()
+    yield
+
+
+app = FastAPI(title="GridWise LLM", lifespan=lifespan)
 
 
 @app.exception_handler(RequestValidationError)
@@ -475,5 +486,8 @@ async def health():
 
 @app.post("/optimize-energy", response_model=OptimizeResponse)
 async def optimize_energy(payload: OptimizeRequest):
-    directives = await interpret_notes(payload)
+    try:
+        directives = await asyncio.wait_for(interpret_notes(payload), timeout=REQUEST_DEADLINE_SECONDS)
+    except asyncio.TimeoutError:
+        raise ServiceError(500, "INTERPRETATION_FAILED", "Operator notes could not be interpreted.")
     return solve(payload, directives)
