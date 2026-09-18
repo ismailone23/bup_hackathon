@@ -88,17 +88,16 @@ def test_optimizer_should_prioritize_available_solar():
 # 3. Negative Tariff Exploitation Tests
 # ---------------------------------------------------------
 
-def test_negative_tariff_should_not_allow_unlimited_grid_import():
-    """
-    Issue:
-    Negative electricity prices can cause unlimited grid import.
-
-    Expected:
-    Grid import must remain physically bounded.
-    """
-
+def test_negative_tariff_is_rejected():
     hours = [{"hour": h, "demand_kwh": 10, "solar_kwh": 0, "tariff_bdt_per_kwh": -100} for h in range(24)]
+    with pytest.raises(pydantic.ValidationError):
+        scenario(hours)
+
+
+def test_zero_tariff_is_accepted_with_zero_cost():
+    hours = [{"hour": h, "demand_kwh": 10, "solar_kwh": 0, "tariff_bdt_per_kwh": 0} for h in range(24)]
     result = main.solve(scenario(hours), no_op())
+    assert result.total_cost_bdt == 0
     assert result.total_grid_kwh <= 240
 
 
@@ -374,3 +373,28 @@ def test_operator_note_length_is_bounded():
     }
     with pytest.raises(pydantic.ValidationError):
         main.OptimizeRequest.model_validate(body)
+
+
+@pytest.mark.parametrize("bad", ["", "   ", "a\nb\tc", "  SAMPLE-01  "])
+def test_scenario_id_must_be_a_clean_identifier(bad):
+    body = {
+        "scenario_id": bad,
+        "operator_notes": ["No-op"],
+        "hours": [{"hour": h, "demand_kwh": 1.0, "solar_kwh": 0.0, "tariff_bdt_per_kwh": 1.0} for h in range(24)],
+        "battery": {
+            "capacity_kwh": 20.0,
+            "initial_energy_kwh": 10.0,
+            "minimum_energy_kwh": 0.0,
+            "max_charge_kwh_per_hour": 5.0,
+            "max_discharge_kwh_per_hour": 5.0,
+        },
+    }
+    with pytest.raises(pydantic.ValidationError):
+        main.OptimizeRequest.model_validate(body)
+
+
+def test_plan_summary_uses_human_readable_wording():
+    hours = [{"hour": h, "demand_kwh": 10, "solar_kwh": 0, "tariff_bdt_per_kwh": 5} for h in range(24)]
+    result = main.solve(scenario(hours), [directive("no_charge_window", [14, 15])])
+    assert "no-charge windows" in result.plan_summary
+    assert "no_charge_window" not in result.plan_summary

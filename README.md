@@ -8,6 +8,12 @@ replays the serialized schedule before returning it.
 
 ## Endpoints
 
+Live base URL: `https://buphackathon-production.up.railway.app`
+
+```bash
+curl https://buphackathon-production.up.railway.app/health
+```
+
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/health` | Readiness check |
@@ -68,9 +74,11 @@ curl http://127.0.0.1:8000/health
 - `battery`: capacity, initial energy, minimum energy, and hourly charge/discharge limits
 
 Each hour contains `hour`, `demand_kwh`, `solar_kwh`, and
-`tariff_bdt_per_kwh`. Numeric values must be finite. Demand, solar, battery
-quantities, and rate limits are non-negative. Input hour entries may arrive in
-any order, but are sorted internally after uniqueness and completeness checks.
+`tariff_bdt_per_kwh`. Numeric values must be finite. Demand, solar, tariff,
+battery quantities, and rate limits are non-negative. `scenario_id` must be a
+non-empty identifier without surrounding whitespace or control characters.
+Input hour entries may arrive in any order, but are sorted internally after
+uniqueness and completeness checks.
 
 Example request shape:
 
@@ -268,7 +276,11 @@ docker run --rm -p 8000:8000 -e OPENAI_API_KEY=<key> \
 
 ## Railway Deployment
 
-Railway can deploy this repository using the included `Dockerfile`. Configure
+The submitted service is deployed at
+`https://buphackathon-production.up.railway.app` and verified externally with
+`GET /health` plus all ten public sample cases.
+
+Railway deploys this repository using the included `Dockerfile`. Configure
 these Railway service variables:
 
 ```text
@@ -278,11 +290,8 @@ OPENAI_TIMEOUT_SECONDS=4.5
 REQUEST_DEADLINE_SECONDS=18
 ```
 
-Do not commit or print the key. Railway should use the container command from
-the `Dockerfile`; the application listens on the Railway-provided port only if
-the platform overrides it, otherwise it uses port 8000. Submit the resulting
-public Railway base URL only after verifying both `/health` and at least one
-public sample request through `/optimize-energy` from outside your network.
+Do not commit or print the key. The container command comes from the
+`Dockerfile` and listens on port 8000 unless the platform overrides it.
 
 The service also honors `REQUEST_DEADLINE_SECONDS` (default `18`) as the total
 internal deadline for a model-backed request. Set it lower only if your host

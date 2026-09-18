@@ -12,7 +12,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from openai import APIError, AsyncOpenAI
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, model_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_validator, model_serializer, model_validator
 from scipy.optimize import linprog
 
 load_dotenv()
@@ -30,12 +30,28 @@ class DirectiveType(str, Enum):
     NO_OP = "no_op"
 
 
+SUMMARY_PHRASES = {
+    DirectiveType.SOLAR_REDUCTION: "the reduced solar availability",
+    DirectiveType.MINIMUM_BATTERY_RESERVE: "the battery reserve floor",
+    DirectiveType.NO_CHARGE_WINDOW: "the no-charge windows",
+    DirectiveType.NO_DISCHARGE_WINDOW: "the no-discharge windows",
+    DirectiveType.MAX_GRID_WINDOW: "the grid import caps",
+}
+
+
 class HourInput(BaseModel):
     model_config = ConfigDict(extra="ignore")
     hour: Annotated[StrictInt, Field(ge=0, le=23)]
     demand_kwh: NonNegative
     solar_kwh: NonNegative
-    tariff_bdt_per_kwh: Number
+    tariff_bdt_per_kwh: NonNegative
+
+    @field_validator("tariff_bdt_per_kwh")
+    @classmethod
+    def reject_negative_zero(cls, value: float) -> float:
+        if math.copysign(1.0, value) < 0:
+            raise ValueError("tariff_bdt_per_kwh must be non-negative")
+        return value
 
 
 class BatteryInput(BaseModel):
@@ -55,13 +71,15 @@ class BatteryInput(BaseModel):
 
 class OptimizeRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    scenario_id: StrictStr
+    scenario_id: Annotated[StrictStr, Field(min_length=1)]
     operator_notes: Annotated[list[Annotated[StrictStr, Field(max_length=1000)]], Field(min_length=1, max_length=3)]
     hours: Annotated[list[HourInput], Field(min_length=24, max_length=24)]
     battery: BatteryInput
 
     @model_validator(mode="after")
     def valid_scenario(self):
+        if self.scenario_id != self.scenario_id.strip() or any(ch in self.scenario_id for ch in "\r\n\t"):
+            raise ValueError("scenario_id must not contain surrounding whitespace or control characters")
         if any(not note.strip() for note in self.operator_notes):
             raise ValueError("operator notes must not be blank")
         if {item.hour for item in self.hours} != set(range(24)):
@@ -181,10 +199,18 @@ Paraphrased times may be words rather than numbers; map them to the same 24-hour
 The ending clock time is a boundary, never an included hour. Emit sorted unique hours 0 through 23.
 A reduction BY 80% leaves factor 0.2; reduction TO 80% means factor 0.8.
 Convert percentage/fraction reserves to kWh using the supplied battery capacity.
+Only solar-related notes (clouds, panel cleaning, PV output) are solar_reduction.
+Notes about demand, consumption, load, or tariff are not supported directives; mark them no_op.
+A note that permits an action only inside a window forbids it everywhere else: 'charging
+is allowed only from 2 PM to 4 PM' is no_charge_window over the other 22 hours.
+Open-ended windows such as 'from 6 PM' continue through hour 23. A vague period with no
+whole-hour clock boundary ('soon', 'starting now') is no_op. A vague term is never widened
+past its conventional period: 'morning' is about hours 6 through 11, never hours 0-5.
 For no_op use applies=false and a null adjustment; otherwise use applies=true.
 For an adjustment, always include hours and all three nullable value fields. Populate only the field
 for that directive: factor, minimum_energy_kwh, or max_grid_kwh. Window directives use all null values.
-Do not infer unsupported changes to demand, tariff, or battery parameters.
+Emit exactly one entry per note; if a note lists several changes, choose the single
+best-supported directive and ignore the rest. Never invent demand, tariff, or battery changes.
 Before returning, independently check each note's directive type, boundary hours, percentage
 normalization, note index, and whether the note is an unrelated distractor."""
 
@@ -364,8 +390,13 @@ def solve(payload: OptimizeRequest, directives: list[DirectiveInterpretation]) -
     bounds += [(0, discharge_limit[h]) for h in range(24)]
     bounds += [(reserve[h], payload.battery.capacity_kwh) for h in range(24)]
 
-    result = linprog(objective, A_eq=np.array(equalities), b_eq=np.array(targets), bounds=bounds, method="highs")
-    if not result.success:
+    lp = dict(A_eq=np.array(equalities), b_eq=np.array(targets), bounds=bounds)
+    result = linprog(objective, method="highs", **lp)
+    if result.x is None:
+        # HiGHS dual simplex can report an unrecognized status on degenerate LPs
+        # that the interior-point solver handles; the replay below gates correctness.
+        result = linprog(objective, method="highs-ipm", **lp)
+    if result.x is None:
         raise ServiceError(422, "INFEASIBLE_CONSTRAINTS", "Operator constraints cannot be satisfied.")
 
     grid, solar_used, charge, discharge, energy = np.split(result.x, 5)
@@ -389,8 +420,15 @@ def solve(payload: OptimizeRequest, directives: list[DirectiveInterpretation]) -
     replay(payload, directives, plan)
     total_grid = clean(sum(item.grid_kwh for item in plan))
     total_cost = clean(sum(item.grid_kwh * payload.hours[item.hour].tariff_bdt_per_kwh for item in plan))
-    active = [item.directive_type.value for item in directives if item.applies]
-    summary = "Minimum-cost schedule satisfies " + (", ".join(active) if active else "the base operating constraints") + " and restores the initial battery energy."
+    active = sorted({SUMMARY_PHRASES[item.directive_type] for item in directives if item.applies})
+    if active:
+        if len(active) == 1:
+            satisfied = active[0]
+        else:
+            satisfied = ", ".join(active[:-1]) + f" and {active[-1]}"
+        summary = f"Minimum-cost schedule satisfies {satisfied} and restores the initial battery energy."
+    else:
+        summary = "Minimum-cost schedule satisfies the base operating constraints and restores the initial battery energy."
     response = OptimizeResponse(
         scenario_id=payload.scenario_id,
         directive_interpretation=directives,
