@@ -43,6 +43,7 @@ Set the values in `.env` without committing the file:
 OPENAI_API_KEY=your-key-here
 OPENAI_MODEL=gpt-4.1-mini
 OPENAI_TIMEOUT_SECONDS=4.5
+REQUEST_DEADLINE_SECONDS=18
 ```
 
 Start the service exactly as the container does:
@@ -100,7 +101,44 @@ The example is abbreviated for readability. A real request must include all
 
 The response contains `scenario_id`, one `directive_interpretation` entry per
 note, a 24-entry `hourly_plan`, `total_grid_kwh`, `total_cost_bdt`,
-`peak_grid_kwh`, and a deterministic `plan_summary`.
+`peak_grid_kwh`, and a deterministic `plan_summary`. Example (plan abbreviated):
+
+```json
+{
+  "scenario_id": "GRID-101",
+  "directive_interpretation": [
+    {
+      "note_index": 0,
+      "applies": true,
+      "directive_type": "solar_reduction",
+      "structured_adjustment": {"hours": [13, 14], "factor": 0.2},
+      "explanation": "Solar is reduced during panel maintenance."
+    },
+    {
+      "note_index": 1,
+      "applies": true,
+      "directive_type": "no_charge_window",
+      "structured_adjustment": {"hours": [14, 15]},
+      "explanation": "Charging is unavailable in the stated window."
+    },
+    {
+      "note_index": 2,
+      "applies": false,
+      "directive_type": "no_op",
+      "structured_adjustment": null,
+      "explanation": "This note does not affect the energy schedule."
+    }
+  ],
+  "hourly_plan": [
+    {"hour": 0, "grid_kwh": 180.0, "solar_used_kwh": 0.0, "battery_action": "idle", "battery_kwh": 0.0, "battery_energy_after_kwh": 200.0},
+    "... hours 1 through 23 ..."
+  ],
+  "total_grid_kwh": 4120.0,
+  "total_cost_bdt": 38365.0,
+  "peak_grid_kwh": 260.0,
+  "plan_summary": "Minimum-cost schedule satisfies solar_reduction, no_charge_window and restores the initial battery energy."
+}
+```
 
 ## Supported Directives
 
@@ -175,41 +213,26 @@ GRIDWISE_LIVE_TESTS=1 python -m pytest -q test_live_llm.py -v
 ### Public sample cases
 
 The public pack contains 10 reference cases. They are not the hidden judge
-set, and reference schedules do not need to match byte-for-byte. Compare
-directive semantics, replay validity, and recalculated cost within the
-challenge tolerance of `0.01` kWh/BDT.
+set, and reference schedules do not need to match byte-for-byte. The included
+validator compares interpreted directive semantics (ignoring explanation
+wording) and the recalculated cost against each reference within the challenge
+tolerance of `0.01` kWh/BDT.
 
-With the service running and `OPENAI_API_KEY` configured, place the public
-sample JSON beside the repository README as `public_sample_cases.json`, then
-run all public inputs:
+Keep the official pack anywhere on disk and pass its path plus your base URL.
+With the service running and `OPENAI_API_KEY` configured:
 
 ```bash
-python - <<'PY'
-import json
-import urllib.request
-
-path = "public_sample_cases.json"
-with open(path, encoding="utf-8") as file:
-    pack = json.load(file)
-
-for case in pack["cases"]:
-    request = urllib.request.Request(
-        "http://127.0.0.1:8000/optimize-energy",
-        data=json.dumps(case["input"]).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        result = json.load(response)
-    assert result["scenario_id"] == case["input"]["scenario_id"]
-    assert len(result["hourly_plan"]) == 24
-    print(result["scenario_id"], result["total_cost_bdt"])
-PY
+python validate_public.py /path/to/public_sample_cases.json http://127.0.0.1:8000
 ```
 
-Expected result: 10 successful JSON responses, each with a matching scenario
-ID and a valid 24-hour plan. Exact costs depend on the valid interpretation
-returned by the model and must be checked against the public case semantics.
+Expected result: ten `PASS` lines and `cases=10 failures=0`. With
+`gpt-4.1-mini` the recalculated cost delta is `0.00` on every public case.
+
+Latency can be measured with the bundled harness:
+
+```bash
+python benchmark.py /path/to/public_sample_cases.json http://127.0.0.1:8000
+```
 
 ## Docker Fallback
 
@@ -248,7 +271,12 @@ OPENAI_TIMEOUT_SECONDS=4.5
 Do not commit or print the key. Railway should use the container command from
 the `Dockerfile`; the application listens on the Railway-provided port only if
 the platform overrides it, otherwise it uses port 8000. Submit the resulting
-public Railway base URL only after verifying both `/health` and
+public Railway base URL only after verifying both `/health` and at least one
+public sample request through `/optimize-energy` from outside your network.
+
+The service also honors `REQUEST_DEADLINE_SECONDS` (default `18`) as the total
+internal deadline for a model-backed request. Set it lower only if your host
+enforces a tighter limit; responses beyond 30 seconds count as failures.
 
 ## Dependencies and Credits
 

@@ -175,7 +175,8 @@ minimum_battery_reserve, no_charge_window, no_discharge_window, max_grid_window,
 Windows are start-inclusive and end-exclusive: '2 AM until 5 AM' means [2,3,4],
 '6 PM until 9 PM' means [18,19,20], and '11 AM until 1 PM' means [11,12].
 For a window that crosses midnight, continue through hour 23, wrap to hour 0,
-and stop before the ending hour; '10 PM until 6 AM' means [0,1,2,3,4,5,22,23].
+and stop before the ending hour; '10 PM until 6 AM' means [0,1,2,3,4,5,22,23],
+already sorted in ascending order.
 Paraphrased times may be words rather than numbers; map them to the same 24-hour clock.
 The ending clock time is a boundary, never an included hour. Emit sorted unique hours 0 through 23.
 A reduction BY 80% leaves factor 0.2; reduction TO 80% means factor 0.8.
