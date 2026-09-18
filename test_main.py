@@ -1,12 +1,17 @@
 from main import (
     DirectiveInterpretation,
+    HourPlan,
     OptimizeRequest,
     StructuredAdjustment,
     replay,
     solve,
     validate_directives,
+    replay,
+    health,
 )
 import pytest
+from fastapi.testclient import TestClient
+from main import app
 
 
 def scenario():
@@ -71,3 +76,47 @@ def test_invalid_directive_hours_are_rejected():
     )
     with pytest.raises(ValueError):
         validate_directives([item], 1, 20)
+
+
+def test_empty_directive_hours_are_rejected():
+    with pytest.raises(ValueError):
+        StructuredAdjustment(hours=[])
+
+
+def test_strict_boolean_is_required():
+    with pytest.raises(ValueError):
+        DirectiveInterpretation.model_validate({
+            "note_index": 0, "applies": "true", "directive_type": "no_op",
+            "structured_adjustment": None, "explanation": "irrelevant",
+        })
+    with pytest.raises(ValueError):
+        DirectiveInterpretation.model_validate({
+            "note_index": 0, "applies": 1, "directive_type": "no_op",
+            "structured_adjustment": None, "explanation": "irrelevant",
+        })
+
+
+def test_replay_rejects_bad_plan_shapes_and_values():
+    payload = scenario()
+    directives = [DirectiveInterpretation(
+        note_index=0, applies=False, directive_type="no_op",
+        structured_adjustment=None, explanation="irrelevant",
+    )]
+    valid = solve(payload, directives).hourly_plan
+    for bad_plan in (valid[:-1], valid[:1] + valid[2:] + valid[1:2], valid[:1] + [valid[0]] + valid[1:-1]):
+        with pytest.raises(Exception):
+            replay(payload, directives, bad_plan)
+    idle = valid[0].model_copy(update={"battery_action": "idle", "battery_kwh": 1.0})
+    with pytest.raises(Exception):
+        replay(payload, directives, [idle] + valid[1:])
+    with pytest.raises(ValueError):
+        HourPlan.model_validate({**valid[0].model_dump(), "grid_kwh": -1})
+    with pytest.raises(ValueError):
+        HourPlan.model_validate({**valid[0].model_dump(), "battery_kwh": -1})
+
+
+def test_health_requires_model_configuration(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    response = TestClient(app).get("/health")
+    assert response.status_code == 503
+    assert response.json() == {"status": "unavailable"}

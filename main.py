@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from openai import APIError, AsyncOpenAI
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, model_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, model_serializer, model_validator
 from scipy.optimize import linprog
 
 load_dotenv()
@@ -70,7 +70,7 @@ class OptimizeRequest(BaseModel):
 
 class StructuredAdjustment(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    hours: list[StrictInt]
+    hours: list[StrictInt] = Field(min_length=1)
     factor: Number | None = None
     minimum_energy_kwh: NonNegative | None = None
     max_grid_kwh: NonNegative | None = None
@@ -83,19 +83,27 @@ class StructuredAdjustment(BaseModel):
 class DirectiveInterpretation(BaseModel):
     model_config = ConfigDict(extra="forbid")
     note_index: StrictInt
-    applies: bool
+    applies: StrictBool
     directive_type: DirectiveType
     structured_adjustment: StructuredAdjustment | None
     explanation: StrictStr
 
 
 class HourPlan(BaseModel):
-    hour: int
-    grid_kwh: float
-    solar_used_kwh: float
+    hour: StrictInt
+    grid_kwh: Number
+    solar_used_kwh: Number
     battery_action: Literal["charge", "discharge", "idle"]
-    battery_kwh: float
-    battery_energy_after_kwh: float
+    battery_kwh: Number
+    battery_energy_after_kwh: Number
+
+    @model_validator(mode="after")
+    def valid_values(self):
+        if self.grid_kwh < 0 or self.solar_used_kwh < 0 or self.battery_kwh < 0 or self.battery_energy_after_kwh < 0:
+            raise ValueError("plan energy values must be non-negative")
+        if self.battery_action == "idle" and self.battery_kwh != 0:
+            raise ValueError("idle battery action must have zero battery_kwh")
+        return self
 
 
 class OptimizeResponse(BaseModel):
@@ -211,7 +219,12 @@ async def request_interpretation(prompt: dict, seed: int, system_prompt: str) ->
             seed=seed,
             max_tokens=600,
     )
-    content = completion.choices[0].message.content
+    if not completion.choices:
+        raise ValueError("model returned no choices")
+    choice = completion.choices[0]
+    if choice.finish_reason == "length":
+        raise ValueError("model response was truncated")
+    content = choice.message.content
     if not content:
         raise ValueError("empty model response")
     raw = json.loads(content)["interpretations"]
@@ -360,6 +373,8 @@ def clean(value: float) -> float:
 
 
 def replay(payload: OptimizeRequest, directives: list[DirectiveInterpretation], plan: list[HourPlan]) -> None:
+    if len(plan) != 24 or [item.hour for item in plan] != list(range(24)):
+        raise ServiceError(500, "VALIDATION_FAILED", "Generated schedule must contain hours 0 through 23 in order.")
     solar, reserve, charge_limit, discharge_limit, grid_cap = apply_directives(payload, directives)
     previous = payload.battery.initial_energy_kwh
     for item in plan:
@@ -367,7 +382,16 @@ def replay(payload: OptimizeRequest, directives: list[DirectiveInterpretation], 
         charge = item.battery_kwh if item.battery_action == "charge" else 0
         discharge = item.battery_kwh if item.battery_action == "discharge" else 0
         valid = (
-            abs(item.grid_kwh + item.solar_used_kwh + discharge - source.demand_kwh - charge) <= 1e-4
+            math.isfinite(item.grid_kwh)
+            and math.isfinite(item.solar_used_kwh)
+            and math.isfinite(item.battery_kwh)
+            and math.isfinite(item.battery_energy_after_kwh)
+            and item.grid_kwh >= 0
+            and item.solar_used_kwh >= 0
+            and item.battery_kwh >= 0
+            and item.battery_energy_after_kwh >= 0
+            and not (item.battery_action == "idle" and item.battery_kwh != 0)
+            and abs(item.grid_kwh + item.solar_used_kwh + discharge - source.demand_kwh - charge) <= 1e-4
             and abs(item.battery_energy_after_kwh - previous - charge + discharge) <= 1e-4
             and 0 <= item.solar_used_kwh <= solar[item.hour] + 1e-6
             and reserve[item.hour] - 1e-6 <= item.battery_energy_after_kwh <= payload.battery.capacity_kwh + 1e-6
@@ -402,6 +426,8 @@ async def internal_error_handler(_request: Request, _exc: Exception):
 
 @app.get("/health")
 async def health():
+    if not os.getenv("OPENAI_API_KEY"):
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
     return {"status": "ok"}
 
 
